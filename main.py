@@ -26,17 +26,18 @@ cap = cv2.VideoCapture("vivaanswing.mp4")
 
 recording = False
 positions = []
+trajectory_points = []
 start_time = 0
 max_speed = 0
 
-print("Raise your right hand to start recording the swing.")
+print("Raise your left hand to start recording the swing.")
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    frame = cv2.flip(frame, 1)  # Mirror so right side is right side of image
+    frame = cv2.flip(frame, 1)  # Mirror image
     img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = pose.process(img_rgb)
 
@@ -48,29 +49,30 @@ while True:
         # Draw all landmarks and connections
         mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-        # Draw landmark indices next to each joint
+        # Draw landmark indices for debugging
         for i, lm in enumerate(landmarks):
             cx, cy = int(lm.x * w), int(lm.y * h)
             cv2.putText(frame, str(i), (cx + 5, cy - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # Right wrist (16) and right elbow (14)
-        rw = landmarks[16]
-        re = landmarks[14]
-        rw_coords = (rw.x, rw.y, rw.z)
+        # Left wrist (15) and left elbow (13)
+        lw = landmarks[15]
+        le = landmarks[13]
+        lw_coords = (lw.x, lw.y, lw.z)
+        lw_px = (int(lw.x * w), int(lw.y * h))
 
-        rw_px = (int(rw.x * w), int(rw.y * h))
-
-        # Detect hand raised (wrist above elbow in image coordinates)
-        if not recording and rw.y < re.y - 0.1:
+        # Detect hand raised (wrist above elbow)
+        if not recording and lw.y < le.y - 0.1:
             recording = True
             positions = []
+            trajectory_points = []
             start_time = time.time()
             max_speed = 0
             print("[START] Swing recording started!")
 
         if recording:
-            positions.append(rw_coords)
+            positions.append(lw_coords)
+            trajectory_points.append(lw_px)
 
             if len(positions) > 1:
                 p1 = np.array(positions[-2])
@@ -92,7 +94,7 @@ while True:
                     dz = swing_path_direction_side(start_pos, end_pos)
                     angle = angle_xz(start_pos, end_pos)
 
-                    print("\n=== Swing Analysis (Side View) ===")
+                    print("\n=== Swing Analysis (Side View - Left Forearm) ===")
                     print(f"Peak clubhead speed (normalized units/s): {max_speed:.2f}")
                     print(f"Final swing path angle (degrees): {angle:.2f}")
 
@@ -106,14 +108,22 @@ while True:
                         print("Prediction: Draw (slight inside-out)")
                     else:
                         print("Prediction: Hook (strong inside-out path)")
-                    print("===============================\n")
+                    print("==============================================\n")
 
-        cv2.circle(frame, rw_px, 10, (0, 255, 0) if recording else (0, 0, 255), -1)
+                    trajectory_points = []  # Reset after swing ends
 
-    cv2.putText(frame, "Raise right hand to start", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+        # Draw current left wrist marker
+        cv2.circle(frame, lw_px, 10, (0, 255, 0) if recording else (0, 0, 255), -1)
+
+    # Draw trajectory arc
+    if len(trajectory_points) > 1:
+        for i in range(1, len(trajectory_points)):
+            cv2.line(frame, trajectory_points[i - 1], trajectory_points[i], (0, 255, 255), 2)
+
+    cv2.putText(frame, "Raise left hand to start", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                 1, (255, 255, 255), 2)
 
-    cv2.imshow("Golf Swing Tracker - Side View", frame)
+    cv2.imshow("Golf Swing Tracker - Left Forearm", frame)
 
     if cv2.waitKey(1) & 0xFF == 27:  # ESC to exit
         break

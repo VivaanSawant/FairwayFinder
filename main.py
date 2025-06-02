@@ -3,101 +3,119 @@ import mediapipe as mp
 import numpy as np
 import time
 
-# Setup MediaPipe Pose
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
 
-# Initialize video capture
-cap = cv2.VideoCapture(0)  # 0 = webcam
+pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
+def dist3D(a, b):
+    return np.linalg.norm(np.array(a) - np.array(b))
+
+def angle_xz(start, end):
+    dx = end[0] - start[0]
+    dz = end[2] - start[2]
+    angle_rad = np.arctan2(dz, dx)
+    angle_deg = np.degrees(angle_rad)
+    return angle_deg
+
+def swing_path_direction_side(start, end):
+    dz = end[2] - start[2]
+    return dz
+
+cap = cv2.VideoCapture(0)
 
 recording = False
 positions = []
 start_time = 0
-fps = 30  # You can measure this dynamically
+max_speed = 0
 
-def estimate_speed(positions, fps, px_per_meter=300):
-    speeds = []
-    for i in range(1, len(positions)):
-        dx = positions[i][0] - positions[i - 1][0]
-        dy = positions[i][1] - positions[i - 1][1]
-        dist_px = np.sqrt(dx ** 2 + dy ** 2)
-        speed_mps = (dist_px / px_per_meter) * fps
-        speeds.append(speed_mps)
-    return speeds
+print("Raise your right hand to start recording the swing.")
 
-def swing_path_angle(start, end):
-    dx = end[0] - start[0]
-    dy = end[1] - start[1]
-    angle = np.arctan2(dy, dx) * 180 / np.pi
-    return angle
-
-print("Raise your right hand above your head to begin swing recording.")
-
-while cap.isOpened():
+while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    frame = cv2.flip(frame, 1)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    result = pose.process(rgb)
+    frame = cv2.flip(frame, 1)  # Mirror so right side is right side of image
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(img_rgb)
 
-    if result.pose_landmarks:
-        mp_drawing.draw_landmarks(frame, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+    h, w, _ = frame.shape
 
-        landmarks = result.pose_landmarks.landmark
-        right_wrist = landmarks[mp_pose.PoseLandmark.RIGHT_WRIST]
-        right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+    if results.pose_landmarks:
+        landmarks = results.pose_landmarks.landmark
 
-        h, w, _ = frame.shape
-        wrist_px = (int(right_wrist.x * w), int(right_wrist.y * h))
-        shoulder_px = (int(right_shoulder.x * w), int(right_shoulder.y * h))
+        # Draw all landmarks and connections
+        mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-        # Trigger recording when right hand is raised above shoulder
-        if not recording and right_wrist.y < right_shoulder.y:
-            print("Swing recording started!")
+        # Draw landmark indices next to each joint
+        for i, lm in enumerate(landmarks):
+            cx, cy = int(lm.x * w), int(lm.y * h)
+            cv2.putText(frame, str(i), (cx + 5, cy - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Right wrist (16) and right elbow (14)
+        rw = landmarks[16]
+        re = landmarks[14]
+        rw_coords = (rw.x, rw.y, rw.z)
+
+        rw_px = (int(rw.x * w), int(rw.y * h))
+
+        # Detect hand raised (wrist above elbow in image coordinates)
+        if not recording and rw.y < re.y - 0.1:
             recording = True
             positions = []
             start_time = time.time()
+            max_speed = 0
+            print("[START] Swing recording started!")
 
-        # Record wrist positions while swinging
         if recording:
-            positions.append(wrist_px)
-            cv2.circle(frame, wrist_px, 6, (0, 255, 0), -1)
+            positions.append(rw_coords)
 
-            # Stop recording when swing slows down (velocity drop)
-            if len(positions) >= 10:
-                dx = positions[-1][0] - positions[-2][0]
-                dy = positions[-1][1] - positions[-2][1]
-                velocity = np.sqrt(dx**2 + dy**2)
-                if velocity < 2.5 and (time.time() - start_time > 0.75):  # tweak thresholds
+            if len(positions) > 1:
+                p1 = np.array(positions[-2])
+                p2 = np.array(positions[-1])
+                dt = 1 / 30
+                speed = dist3D(p1, p2) / dt
+                if speed > max_speed:
+                    max_speed = speed
+
+            if len(positions) > 10:
+                recent_speeds = [dist3D(np.array(positions[i]), np.array(positions[i+1])) / dt for i in range(-10, -1)]
+                avg_speed = sum(recent_speeds) / len(recent_speeds)
+                if avg_speed < 0.001 or (time.time() - start_time) > 5:
                     recording = False
-                    print("Swing recording stopped.")
 
-                    # Analyze swing
-                    speeds = estimate_speed(positions, fps)
-                    max_speed = max(speeds) if speeds else 0
+                    start_pos = positions[5]
+                    end_pos = positions[-5]
 
-                    start = positions[5]
-                    end = positions[-5]
-                    angle = swing_path_angle(start, end)
+                    dz = swing_path_direction_side(start_pos, end_pos)
+                    angle = angle_xz(start_pos, end_pos)
 
-                    print("\n=== Swing Analysis ===")
-                    print(f"Peak clubhead speed: {max_speed:.2f} m/s")
-                    print(f"Swing path angle: {angle:.2f}°")
+                    print("\n=== Swing Analysis (Side View) ===")
+                    print(f"Peak clubhead speed (normalized units/s): {max_speed:.2f}")
+                    print(f"Final swing path angle (degrees): {angle:.2f}")
 
-                    if angle < -10:
+                    if dz < -0.02:
                         print("Prediction: Slice (outside-in path)")
-                    elif angle > 10:
-                        print("Prediction: Draw (inside-out path)")
-                    else:
+                    elif -0.02 <= dz < -0.005:
+                        print("Prediction: Fade (slight outside-in)")
+                    elif -0.005 <= dz <= 0.005:
                         print("Prediction: Straight shot")
-                    print("======================\n")
+                    elif 0.005 < dz <= 0.02:
+                        print("Prediction: Draw (slight inside-out)")
+                    else:
+                        print("Prediction: Hook (strong inside-out path)")
+                    print("===============================\n")
 
-    # Show frame
-    cv2.imshow("Real-Time Golf Swing Tracker", frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+        cv2.circle(frame, rw_px, 10, (0, 255, 0) if recording else (0, 0, 255), -1)
+
+    cv2.putText(frame, "Raise right hand to start", (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                1, (255, 255, 255), 2)
+
+    cv2.imshow("Golf Swing Tracker - Side View", frame)
+
+    if cv2.waitKey(1) & 0xFF == 27:  # ESC to exit
         break
 
 cap.release()
